@@ -178,19 +178,35 @@ static const char *resolve_as_class(const cbm_registry_t *reg, const char *name,
     return res.qualified_name;
 }
 
-/* Extract decorator function name: "@app.route('/api')" → "app.route" */
+/* Extract decorator function name from the raw attribute/annotation text.
+ * Handles the per-language surface syntaxes:
+ *   Python/TS:  "@app.route('/api')"   → "app.route"
+ *   Java/Kotlin:"@Override"             → "Override"
+ *   C#:         "[Log]" / "[Log(...)]"  → "Log"
+ *   Rust:       "#[derive(Debug)]"      → "derive"
+ *               "#[allow(dead_code)]"   → "allow"
+ *   PHP 8:      "#[Route('/users')]"    → "Route"
+ *   Swift:      "@discardableResult"    → "discardableResult"
+ *   Scala:      "@deprecated(...)"      → "deprecated"
+ * Returns the leading identifier path, stopping at the first '(' or '['
+ * argument list and trimming any wrapping bracket/`@`/`#` punctuation. */
 static void extract_decorator_func(const char *dec, char *out, size_t outsz) {
     out[0] = '\0';
     if (!dec) {
         return;
     }
     const char *start = dec;
-    if (*start == '@') {
+    /* Strip leading sigils: '@' (Py/TS/JVM/Swift/Scala), '#' + '[' (Rust/PHP8),
+     * or a bare '[' (C# attribute). */
+    while (*start == '@' || *start == '#' || *start == '[' || *start == ' ') {
         start++;
     }
-    /* Find opening paren */
-    const char *paren = strchr(start, '(');
-    size_t len = paren ? (size_t)(paren - start) : strlen(start);
+    /* The name ends at the first argument list ('(' or '[') or wrapper ']'. */
+    size_t len = 0;
+    while (start[len] && start[len] != '(' && start[len] != '[' && start[len] != ']' &&
+           start[len] != ' ' && start[len] != ',') {
+        len++;
+    }
     if (len == 0 || len >= outsz) {
         return;
     }
@@ -339,6 +355,18 @@ static void resolve_decorator(cbm_pipeline_ctx_t *ctx, const cbm_gbuf_node_t *no
     }
     cbm_resolution_t res =
         cbm_registry_resolve(ctx->registry, func_name, module_qn, imp_keys, imp_vals, imp_count);
+    if ((!res.qualified_name || res.qualified_name[0] == '\0') &&
+        !strchr(func_name, '.')) {
+        /* C# attributes are referenced by their short name (`[Log]`) but declared
+         * with the conventional `Attribute` suffix (`class LogAttribute`).  Retry
+         * with the suffix appended so the declaration resolves. */
+        char with_suffix[CBM_SZ_256];
+        int wn = snprintf(with_suffix, sizeof(with_suffix), "%sAttribute", func_name);
+        if (wn > 0 && (size_t)wn < sizeof(with_suffix)) {
+            res = cbm_registry_resolve(ctx->registry, with_suffix, module_qn, imp_keys, imp_vals,
+                                       imp_count);
+        }
+    }
     if (!res.qualified_name || res.qualified_name[0] == '\0') {
         return;
     }

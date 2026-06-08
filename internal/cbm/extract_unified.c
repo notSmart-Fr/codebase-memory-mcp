@@ -672,6 +672,31 @@ static void scan_infra_bindings(CBMExtractCtx *ctx, TSNode node) {
     }
 }
 
+// JS/TS `export_statement` appears in import_node_types so re-exports
+// (`export { X } from './m'`) are treated as an import boundary.  But it also
+// wraps exported *declarations* (`export function f(cfg: Config) {}`), and
+// treating those as an import boundary wrongly suppresses USAGE edges for type
+// references inside the exported declaration's signature.  Return true when the
+// node is an export that contains a declaration child (i.e. NOT a bare re-export),
+// so the caller skips the import-scope push for it.
+static bool is_export_of_declaration(TSNode node) {
+    if (strcmp(ts_node_type(node), "export_statement") != 0) {
+        return false;
+    }
+    uint32_t n = ts_node_child_count(node);
+    for (uint32_t i = 0; i < n; i++) {
+        const char *ck = ts_node_type(ts_node_child(node, i));
+        if (strcmp(ck, "function_declaration") == 0 || strcmp(ck, "class_declaration") == 0 ||
+            strcmp(ck, "lexical_declaration") == 0 || strcmp(ck, "abstract_class_declaration") == 0 ||
+            strcmp(ck, "interface_declaration") == 0 || strcmp(ck, "enum_declaration") == 0 ||
+            strcmp(ck, "type_alias_declaration") == 0 || strcmp(ck, "variable_declaration") == 0 ||
+            strcmp(ck, "generator_function_declaration") == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
 // Push scope markers for function, class, call, and import boundary nodes.
 static void push_boundary_scopes(CBMExtractCtx *ctx, TSNode node, const CBMLangSpec *spec,
                                  WalkState *state, uint32_t depth) {
@@ -700,7 +725,8 @@ static void push_boundary_scopes(CBMExtractCtx *ctx, TSNode node, const CBMLangS
     if (spec->call_node_types && cbm_kind_in_set(node, spec->call_node_types)) {
         push_scope(state, SCOPE_CALL, depth, NULL);
     }
-    if (spec->import_node_types && cbm_kind_in_set(node, spec->import_node_types)) {
+    if (spec->import_node_types && cbm_kind_in_set(node, spec->import_node_types) &&
+        !is_export_of_declaration(node)) {
         push_scope(state, SCOPE_IMPORT, depth, NULL);
     }
     /* Loop / branch nesting for bottleneck metrics. Loops are gated on named

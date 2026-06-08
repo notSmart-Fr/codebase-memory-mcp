@@ -1919,6 +1919,37 @@ static void py_walk_if_statement(PyLSPContext* ctx, TSNode if_node) {
     }
 }
 
+/* Map a Python infix operator token to its dunder method name. */
+static const char* py_binop_dunder(const char* op_text) {
+    if (!op_text) return NULL;
+    if (strcmp(op_text, "+") == 0) return "__add__";
+    if (strcmp(op_text, "-") == 0) return "__sub__";
+    if (strcmp(op_text, "*") == 0) return "__mul__";
+    if (strcmp(op_text, "/") == 0) return "__truediv__";
+    if (strcmp(op_text, "//") == 0) return "__floordiv__";
+    if (strcmp(op_text, "%") == 0) return "__mod__";
+    if (strcmp(op_text, "**") == 0) return "__pow__";
+    if (strcmp(op_text, "<<") == 0) return "__lshift__";
+    if (strcmp(op_text, ">>") == 0) return "__rshift__";
+    if (strcmp(op_text, "&") == 0) return "__and__";
+    if (strcmp(op_text, "|") == 0) return "__or__";
+    if (strcmp(op_text, "^") == 0) return "__xor__";
+    if (strcmp(op_text, "@") == 0) return "__matmul__";
+    return NULL;
+}
+
+/* If `recv` is a user-defined NAMED type that defines `dunder`, emit a CALLS
+ * edge to that dunder method (operator-overload / subscript desugaring).  This
+ * models `a + b` → T.__add__ and `s[k]` → T.__getitem__ as calls. */
+static void py_emit_dunder_call(PyLSPContext* ctx, const CBMType* recv, const char* dunder) {
+    if (!recv || recv->kind != CBM_TYPE_NAMED || !dunder) return;
+    const CBMRegisteredFunc* f =
+        py_lookup_attribute(ctx, recv->data.named.qualified_name, dunder);
+    if (f && f->qualified_name) {
+        py_emit_resolved_call(ctx, f->qualified_name, "lsp_operator_dunder", 0.85f);
+    }
+}
+
 static void py_resolve_calls_in(PyLSPContext* ctx, TSNode node) {
     if (!ctx || ts_node_is_null(node)) return;
     const char* k = ts_node_type(node);
@@ -1929,6 +1960,26 @@ static void py_resolve_calls_in(PyLSPContext* ctx, TSNode node) {
     // Emit call entry if applicable.
     if (strcmp(k, "call") == 0) {
         py_emit_call_for(ctx, node);
+    }
+
+    // Operator-overload desugaring: `a + b` calls type(a).__add__,
+    // `s[k]` calls type(s).__getitem__.  Only emit when the receiver is a
+    // user-defined type that actually declares the dunder (built-ins resolve
+    // to typeshed and would create noisy edges).
+    if (strcmp(k, "binary_operator") == 0) {
+        TSNode left = ts_node_child_by_field_name(node, "left", 4);
+        TSNode op = ts_node_child_by_field_name(node, "operator", 8);
+        if (!ts_node_is_null(left) && !ts_node_is_null(op)) {
+            const char* dunder = py_binop_dunder(py_node_text(ctx, op));
+            if (dunder) {
+                py_emit_dunder_call(ctx, py_eval_expr_type(ctx, left), dunder);
+            }
+        }
+    } else if (strcmp(k, "subscript") == 0) {
+        TSNode value = ts_node_child_by_field_name(node, "value", 5);
+        if (!ts_node_is_null(value)) {
+            py_emit_dunder_call(ctx, py_eval_expr_type(ctx, value), "__getitem__");
+        }
     }
 
     // if_statement gets special-case narrowing.

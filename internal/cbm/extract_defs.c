@@ -1211,17 +1211,63 @@ static int count_modifier_annotations(TSNode modifiers, const CBMLangSpec *spec)
     return count;
 }
 
-// Find Java/Kotlin/C# modifiers node with annotations.
+// Find the wrapper child that holds annotations/attributes for languages where
+// they are nested under an intermediate node rather than being a prev-sibling:
+//   Java/Kotlin/C#/Swift → `modifiers` (contains annotation/attribute)
+//   PHP 8                → `attribute_list` (contains attribute_group)
+// Returns a null node when the language has no such wrapper.
 static TSNode find_jvm_modifiers(TSNode node, CBMLanguage lang) {
     TSNode null_node = {0};
-    if (lang != CBM_LANG_JAVA && lang != CBM_LANG_KOTLIN && lang != CBM_LANG_CSHARP) {
+    const char *wrapper = NULL;
+    switch (lang) {
+    case CBM_LANG_JAVA:
+    case CBM_LANG_KOTLIN:
+    case CBM_LANG_SWIFT:
+        wrapper = "modifiers";
+        break;
+    case CBM_LANG_CSHARP:
+    case CBM_LANG_PHP:
+        /* C# attributes live in an `attribute_list` child (modifiers like
+         * `public` are separate `modifier` nodes); PHP 8 likewise nests
+         * `attribute_group` under `attribute_list`. */
+        wrapper = "attribute_list";
+        break;
+    default:
         return null_node;
     }
-    TSNode modifiers = ts_node_child_by_field_name(node, TS_FIELD("modifiers"));
-    if (ts_node_is_null(modifiers)) {
-        modifiers = cbm_find_child_by_kind(node, "modifiers");
+    TSNode w = ts_node_child_by_field_name(node, wrapper, (uint32_t)strlen(wrapper));
+    if (ts_node_is_null(w)) {
+        w = cbm_find_child_by_kind(node, wrapper);
     }
-    return modifiers;
+    return w;
+}
+
+// Count direct children of `node` that are decorator/annotation nodes (used by
+// languages like Scala where the annotation is a direct child of the def node).
+static int count_child_decorators(TSNode node, const CBMLangSpec *spec) {
+    int count = 0;
+    uint32_t cc = ts_node_child_count(node);
+    for (uint32_t ci = 0; ci < cc; ci++) {
+        TSNode child = ts_node_child(node, ci);
+        if (cbm_kind_in_set(child, spec->decorator_node_types)) {
+            count++;
+        }
+    }
+    return count;
+}
+
+// Collect direct-child decorator texts into result[] starting at idx.
+static int collect_child_decorators(CBMArena *a, TSNode node, const char *source,
+                                    const CBMLangSpec *spec, const char **result, int idx,
+                                    int max) {
+    uint32_t cc = ts_node_child_count(node);
+    for (uint32_t ci = 0; ci < cc && idx < max; ci++) {
+        TSNode child = ts_node_child(node, ci);
+        if (cbm_kind_in_set(child, spec->decorator_node_types)) {
+            result[idx++] = cbm_node_text(a, child, source);
+        }
+    }
+    return idx;
 }
 
 // Collect decorator texts from a modifiers node into result array starting at idx.
@@ -1249,7 +1295,10 @@ static const char **extract_decorators(CBMArena *a, TSNode node, const char *sou
     while (!ts_node_is_null(prev)) {
         if (cbm_kind_in_set(prev, spec->decorator_node_types)) {
             count++;
-        } else {
+        } else if (ts_node_is_named(prev)) {
+            /* A real preceding construct ends the decorator run. Anonymous
+             * tokens (e.g. TS `export` between `@Decorator` and the
+             * `class_declaration`) are skipped so the decorator is still seen. */
             break;
         }
         prev = ts_node_prev_sibling(prev);
@@ -1257,14 +1306,20 @@ static const char **extract_decorators(CBMArena *a, TSNode node, const char *sou
 
     TSNode modifiers = {0};
     int mod_count = 0;
+    int child_count = 0;
     if (count == 0) {
         modifiers = find_jvm_modifiers(node, lang);
         if (!ts_node_is_null(modifiers)) {
             mod_count = count_modifier_annotations(modifiers, spec);
         }
+        /* Languages like Scala attach the annotation directly as a child of the
+         * definition node (no wrapper, no prev-sibling). */
+        if (mod_count == 0) {
+            child_count = count_child_decorators(node, spec);
+        }
     }
 
-    int total = count + mod_count;
+    int total = count + mod_count + child_count;
     if (total == 0) {
         return NULL;
     }
@@ -1280,13 +1335,16 @@ static const char **extract_decorators(CBMArena *a, TSNode node, const char *sou
     while (!ts_node_is_null(prev) && idx < count) {
         if (cbm_kind_in_set(prev, spec->decorator_node_types)) {
             result[idx++] = cbm_node_text(a, prev, source);
-        } else {
+        } else if (ts_node_is_named(prev)) {
             break;
         }
         prev = ts_node_prev_sibling(prev);
     }
     if (!ts_node_is_null(modifiers)) {
         idx = collect_modifier_decorators(a, modifiers, source, spec, result, idx, total);
+    }
+    if (child_count > 0) {
+        idx = collect_child_decorators(a, node, source, spec, result, idx, total);
     }
     result[idx] = NULL;
     return result;

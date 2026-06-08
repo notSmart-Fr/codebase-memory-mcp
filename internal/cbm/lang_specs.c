@@ -425,6 +425,7 @@ static const char *scala_var_types[] = {"val_definition", "var_definition", "val
                                         "var_declaration", NULL};
 static const char *scala_assign_types[] = {"assignment_expression", NULL};
 static const char *scala_throw_types[] = {"throw_expression", NULL};
+static const char *scala_decorator_types[] = {"annotation", NULL};
 
 // ==================== KOTLIN ====================
 static const char *kotlin_func_types[] = {"function_declaration", "secondary_constructor",
@@ -1657,7 +1658,7 @@ static const CBMLangSpec lang_specs[CBM_LANG_COUNT] = {
     [CBM_LANG_SCALA] = {CBM_LANG_SCALA, scala_func_types, scala_class_types, empty_types,
                         scala_module_types, scala_call_types, scala_import_types,
                         scala_import_types, scala_branch_types, scala_var_types, scala_assign_types,
-                        scala_throw_types, NULL, empty_types, scala_env_funcs, NULL,
+                        scala_throw_types, NULL, scala_decorator_types, scala_env_funcs, NULL,
                         tree_sitter_scala, NULL},
 
     // CBM_LANG_KOTLIN
