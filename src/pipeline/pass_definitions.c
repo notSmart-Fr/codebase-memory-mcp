@@ -103,7 +103,9 @@ static int def_json_escape_char(char *buf, size_t avail, char ch) {
         break;
     default:
         if (avail >= SKIP_ONE) {
-            buf[0] = ch;
+            /* Any other raw control byte (e.g. form feed) is invalid inside a
+             * JSON string — degrade to a space. */
+            buf[0] = ((unsigned char)ch < 0x20) ? ' ' : ch;
         }
         return SKIP_ONE;
     }
@@ -194,14 +196,11 @@ static void append_json_str_array(char *buf, size_t bufsize, size_t *pos, const 
         if (p < bufsize - SKIP_ONE) {
             buf[p++] = '"';
         }
+        /* Full escaping (not just quote/backslash): items like C param types
+         * sliced from multi-line declarations carry raw \n/\t bytes, which are
+         * invalid inside JSON strings. */
         for (const char *s = arr[i]; *s && p < bufsize - PD_ESC_SPACE; s++) {
-            if (*s == '"' || *s == '\\') {
-                buf[p++] = '\\';
-                if (p >= bufsize - PD_ESC_SPACE) {
-                    break;
-                }
-            }
-            buf[p++] = *s;
+            p += (size_t)def_json_escape_char(buf + p, bufsize - p - PD_ESC_SPACE, *s);
         }
         if (p < bufsize - SKIP_ONE) {
             buf[p++] = '"';

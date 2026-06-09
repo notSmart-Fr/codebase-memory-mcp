@@ -506,6 +506,23 @@ TEST(pipeline_def_props_valid_json_when_oversized) {
         fclose(f);
     }
 
+    /* Multi-line parameter declarations: param_types items then carry raw
+     * newline/tab bytes from the source slice. The array appender's inline
+     * escape loop only handled quote/backslash, so the raw control bytes made
+     * the JSON invalid (118 Linux-kernel rows of this shape). */
+    {
+        char path[512];
+        snprintf(path, sizeof(path), "%s/sweep_nl.c", g_tmpdir);
+        FILE *f = fopen(path, "w");
+        if (!f) {
+            teardown_test_repo();
+            FAIL("failed to write sweep_nl.c");
+        }
+        fprintf(f, "int sweep_fn_nl(struct\n\t\t\t\treally_long_struct_name *a,\n"
+                   "          enum\n\tweird_enum b) { return 0; }\n");
+        fclose(f);
+    }
+
     char db_path[512];
     snprintf(db_path, sizeof(db_path), "%s/test_huge_props.db", g_tmpdir);
     cbm_pipeline_t *p = cbm_pipeline_new(g_tmpdir, db_path, CBM_MODE_FULL);
@@ -539,7 +556,7 @@ TEST(pipeline_def_props_valid_json_when_oversized) {
         yyjson_doc_free(doc);
         checked++;
     }
-    ASSERT_EQ(checked, 60); /* all sweep functions present */
+    ASSERT_EQ(checked, 61); /* all sweep functions present (60 sizes + nl case) */
 
     cbm_store_free_nodes(funcs, func_count);
     cbm_store_close(s);
